@@ -1,92 +1,68 @@
 const express = require('express');
+const http = require('http');
+const { Server } = require('socket.io');
+const { v4: uuidv4 } = require('uuid');
+
 const app = express();
-const http = require('http').createServer(app);
-const io = require('socket.io')(http);
-const PORT = process.env.PORT || 3000;
+const server = http.createServer(app);
+const io = new Server(server);
 
-app.use(express.static('public'));
 app.use(express.json());
+app.use(express.static('public'));
 
-let users = {};      // { socketId: { username, userId } }
-let usernames = {};  // { username: userId }
-let chats = {};      // { chatId: { users: [userId1, userId2], messages: [] } }
+// Простая база пользователей в памяти
+const users = {}; // username -> { userId, username }
 
-let nextUserId = 1;
-let nextChatId = 1;
-
-// Регистрация
+// Роуты регистрации и входа
 app.post('/register', (req, res) => {
     const { username } = req.body;
-    if (!username) return res.status(400).json({ error: 'Введите юзернейм' });
-    if (usernames[username]) return res.status(400).json({ error: 'Юзернейм занят' });
-
-    const userId = nextUserId++;
-    usernames[username] = userId;
-    res.json({ success: true, userId });
+    if(!username) return res.json({error:'Введите юзернейм'});
+    if(users[username]) return res.json({error:'Юзернейм занят'});
+    const userId = uuidv4();
+    users[username] = { username, userId };
+    res.json({userId});
 });
 
-// Вход
 app.post('/login', (req, res) => {
     const { username } = req.body;
-    const userId = usernames[username];
-    if (!userId) return res.status(400).json({ error: 'Юзернейм не найден' });
-    res.json({ success: true, userId });
+    if(!username) return res.json({error:'Введите юзернейм'});
+    if(!users[username]) return res.json({error:'Пользователь не найден'});
+    res.json({userId: users[username].userId});
 });
 
 // Поиск пользователей
-app.get('/search/:username', (req, res) => {
-    const search = req.params.username.toLowerCase();
-    const results = Object.keys(usernames)
-        .filter(name => name.toLowerCase().includes(search));
-    res.json({ results });
+app.get('/search/:query', (req,res)=>{
+    const query = req.params.query.toLowerCase();
+    const results = Object.keys(users).filter(u=>u.toLowerCase().includes(query));
+    res.json({results});
 });
 
 // Socket.IO
-io.on('connection', socket => {
-    console.log('Пользователь подключился', socket.id);
+const onlineUsers = {}; // userId -> socket.id
 
-    // Пользователь присоединился
-    socket.on('join', data => {
-        users[socket.id] = { username: data.username, userId: data.userId };
-        console.log(users[socket.id]);
+io.on('connection', socket=>{
+    console.log('Новое подключение', socket.id);
+
+    socket.on('join', (user)=>{
+        onlineUsers[user.userId] = socket.id;
+        console.log('Пользователь онлайн:', user.username);
     });
 
-    // Отправка сообщений
-    socket.on('send-message', data => {
-        const { toUserId, text } = data;
-
-        // Найти чат между пользователями
-        let chatId = null;
-        for (let id in chats) {
-            const c = chats[id];
-            if (c.users.includes(users[socket.id].userId) && c.users.includes(toUserId)) {
-                chatId = id;
-                break;
-            }
-        }
-
-        if (!chatId) {
-            chatId = nextChatId++;
-            chats[chatId] = { users: [users[socket.id].userId, toUserId], messages: [] };
-        }
-
-        const message = { from: users[socket.id].userId, text, time: Date.now() };
-        chats[chatId].messages.push(message);
-
-        // Отправить сообщение пользователю
-        for (let id in users) {
-            if (users[id].userId === toUserId || id === socket.id) {
-                io.to(id).emit('receive-message', { chatId, message, fromUsername: users[socket.id].username });
-            }
+    socket.on('send-message', (data)=>{
+        const {toUserId,text} = data;
+        const fromUserId = Object.keys(onlineUsers).find(id=>onlineUsers[id]===socket.id);
+        const toSocketId = onlineUsers[toUserId];
+        if(toSocketId){
+            io.to(toSocketId).emit('receive-message',{fromUsername: users[toUserId].username, message:{text, from: fromUserId}});
         }
     });
 
-    socket.on('disconnect', () => {
-        delete users[socket.id];
+    socket.on('disconnect', ()=>{
+        for(const [userId,sid] of Object.entries(onlineUsers)){
+            if(sid===socket.id) delete onlineUsers[userId];
+        }
         console.log('Пользователь отключился');
     });
 });
 
-http.listen(PORT, () => {
-    console.log(`Сервер запущен на http://localhost:${PORT}`);
-});
+server.listen(3000, ()=>console.log('Server running on http://localhost:3000'));
