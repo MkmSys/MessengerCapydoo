@@ -1,141 +1,139 @@
-// server-sqlite.js
 const express = require('express');
-const sqlite3 = require('sqlite3').verbose();
-const cors = require('cors');
-const bodyParser = require('body-parser');
+const fs = require('fs').promises;
+const path = require('path');
 const app = express();
-const PORT = process.env.PORT || 3000;
+const PORT = 3000;
 
 // Middleware
-app.use(cors());
-app.use(bodyParser.json());
-
-// Инициализация базы данных SQLite
-const db = new sqlite3.Database('./class6g.db', (err) => {
-    if (err) {
-        console.error('Ошибка подключения к SQLite:', err.message);
-    } else {
-        console.log('✅ Подключено к SQLite базе данных');
-        initializeDatabase();
-    }
+app.use(express.json());
+app.use((req, res, next) => {
+    res.header('Access-Control-Allow-Origin', '*');
+    res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE');
+    res.header('Access-Control-Allow-Headers', 'Content-Type');
+    next();
 });
 
-function initializeDatabase() {
-    // Создаем таблицы если их нет
-    db.run(`CREATE TABLE IF NOT EXISTS homework (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        subject TEXT NOT NULL,
-        task TEXT NOT NULL,
-        date TEXT NOT NULL,
-        timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
-    )`);
-    
-    db.run(`CREATE TABLE IF NOT EXISTS news (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        title TEXT NOT NULL,
-        content TEXT NOT NULL,
-        date TEXT NOT NULL,
-        timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
-    )`);
-    
-    db.run(`CREATE TABLE IF NOT EXISTS schedule (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        day TEXT UNIQUE NOT NULL,
-        lessons TEXT NOT NULL
-    )`);
-    
-    db.run(`CREATE TABLE IF NOT EXISTS links (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        title TEXT NOT NULL,
-        url TEXT NOT NULL,
-        description TEXT,
-        timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
-    )`);
-    
-    // Добавляем начальные данные если таблицы пустые
-    db.get("SELECT COUNT(*) as count FROM schedule", (err, row) => {
-        if (row.count === 0) {
-            const initialSchedule = [
-                ['Понедельник', 'Математика, Русский язык, Литература, Физкультура, Английский язык'],
-                ['Вторник', 'История, География, Биология, Технология, Музыка'],
-                ['Среда', 'Математика, Русский язык, Физика, Химия, ИЗО'],
-                ['Четверг', 'Английский язык, Обществознание, Информатика, Физкультура, Классный час'],
-                ['Пятница', 'Литература, География, Биология, История, ОБЖ']
-            ];
-            
-            const stmt = db.prepare("INSERT INTO schedule (day, lessons) VALUES (?, ?)");
-            initialSchedule.forEach(([day, lessons]) => {
-                stmt.run(day, lessons);
-            });
-            stmt.finalize();
-            console.log('📅 Добавлено начальное расписание');
-        }
-    });
+// Данные в памяти
+let data = {
+    homework: [],
+    news: [],
+    schedule: [
+        { id: 1, day: 'Понедельник', lessons: ['Математика', 'Русский язык', 'Литература', 'Физкультура', 'Английский'] },
+        { id: 2, day: 'Вторник', lessons: ['История', 'География', 'Биология', 'Технология', 'Музыка'] },
+        { id: 3, day: 'Среда', lessons: ['Математика', 'Русский язык', 'Физика', 'Химия', 'ИЗО'] },
+        { id: 4, day: 'Четверг', lessons: ['Английский', 'Обществознание', 'Информатика', 'Физкультура', 'Классный час'] },
+        { id: 5, day: 'Пятница', lessons: ['Литература', 'География', 'Биология', 'История', 'ОБЖ'] }
+    ],
+    links: [
+        { id: 1, title: 'Российская электронная школа', url: 'https://resh.edu.ru', description: 'Бесплатные уроки и задания' }
+    ]
+};
+
+// Загрузка/сохранение данных в файл
+const DATA_FILE = 'data.json';
+
+async function loadData() {
+    try {
+        const fileData = await fs.readFile(DATA_FILE, 'utf8');
+        Object.assign(data, JSON.parse(fileData));
+    } catch (error) {
+        await saveData();
+    }
 }
 
-// Маршруты API
+async function saveData() {
+    await fs.writeFile(DATA_FILE, JSON.stringify(data, null, 2));
+}
+
+// API Routes
 app.get('/api/health', (req, res) => {
-    res.json({ status: 'OK', message: 'Сервер работает', database: 'sqlite' });
-});
-
-// Домашние задания
-app.get('/api/homework', (req, res) => {
-    db.all("SELECT * FROM homework ORDER BY timestamp DESC", (err, rows) => {
-        if (err) {
-            res.status(500).json({ error: err.message });
-        } else {
-            res.json(rows);
-        }
-    });
-});
-
-app.post('/api/homework', (req, res) => {
-    const { subject, task, date } = req.body;
-    db.run("INSERT INTO homework (subject, task, date) VALUES (?, ?, ?)",
-        [subject, task, date],
-        function(err) {
-            if (err) {
-                res.status(500).json({ error: err.message });
-            } else {
-                res.status(201).json({ id: this.lastID, subject, task, date });
-            }
-        }
-    );
+    res.json({ status: 'OK', message: 'Сервер работает' });
 });
 
 // Расписание
 app.get('/api/schedule', (req, res) => {
-    db.all("SELECT * FROM schedule ORDER BY id", (err, rows) => {
-        if (err) {
-            res.status(500).json({ error: err.message });
-        } else {
-            // Преобразуем строку lessons в массив
-            const schedule = rows.map(row => ({
-                ...row,
-                lessons: row.lessons.split(', ').map(lesson => lesson.trim())
-            }));
-            res.json(schedule);
-        }
-    });
+    res.json(data.schedule);
 });
 
 app.post('/api/schedule', (req, res) => {
     const { day, lessons } = req.body;
-    const lessonsStr = Array.isArray(lessons) ? lessons.join(', ') : lessons;
+    const index = data.schedule.findIndex(item => item.day === day);
     
-    db.run("INSERT OR REPLACE INTO schedule (day, lessons) VALUES (?, ?)",
-        [day, lessonsStr],
-        function(err) {
-            if (err) {
-                res.status(500).json({ error: err.message });
-            } else {
-                res.json({ day, lessons: lessonsStr });
-            }
-        }
-    );
+    if (index >= 0) {
+        data.schedule[index].lessons = lessons;
+    } else {
+        data.schedule.push({
+            id: Date.now(),
+            day,
+            lessons
+        });
+    }
+    
+    saveData();
+    res.json({ success: true });
+});
+
+// Домашние задания
+app.get('/api/homework', (req, res) => {
+    res.json(data.homework.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp)));
+});
+
+app.post('/api/homework', (req, res) => {
+    const homework = {
+        id: Date.now(),
+        ...req.body,
+        timestamp: new Date().toISOString()
+    };
+    data.homework.push(homework);
+    saveData();
+    res.status(201).json(homework);
+});
+
+// Новости
+app.get('/api/news', (req, res) => {
+    res.json(data.news.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp)));
+});
+
+app.post('/api/news', (req, res) => {
+    const news = {
+        id: Date.now(),
+        ...req.body,
+        date: new Date().toLocaleDateString('ru-RU'),
+        timestamp: new Date().toISOString()
+    };
+    data.news.push(news);
+    saveData();
+    res.status(201).json(news);
+});
+
+// Ссылки
+app.get('/api/links', (req, res) => {
+    res.json(data.links);
+});
+
+app.post('/api/links', (req, res) => {
+    const link = {
+        id: Date.now(),
+        ...req.body,
+        timestamp: new Date().toISOString()
+    };
+    data.links.push(link);
+    saveData();
+    res.status(201).json(link);
+});
+
+// Отдача статики
+app.use(express.static(__dirname));
+
+app.get('/', (req, res) => {
+    res.sendFile(path.join(__dirname, 'index.html'));
 });
 
 // Запуск сервера
-app.listen(PORT, () => {
-    console.log(`🚀 Сервер запущен на порту ${PORT}`);
+loadData().then(() => {
+    app.listen(PORT, () => {
+        console.log(`✅ Сервер Express запущен на порту ${PORT}`);
+        console.log(`🌐 Откройте: http://localhost:${PORT}`);
+        console.log(`💾 Данные сохраняются в: ${DATA_FILE}`);
+    });
 });
